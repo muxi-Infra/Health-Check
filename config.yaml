@@ -1,0 +1,6 @@
+app:
+  木犀反馈:
+    domain: localhost
+    type: GET
+    port: 8080
+    path: /health
