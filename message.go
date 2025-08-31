@@ -21,7 +21,7 @@ type MessageItem struct {
 }
 
 // SendGroupMessage 发送群消息的封装函数
-func SendGroupMessage(url string, groupID int64, message []MessageItem) (string, error) {
+func SendGroupMessage(url string, groupID int64, message []MessageItem) (interface{}, error) {
 	// 创建请求体
 	requestBody := GroupMessageRequest{
 		GroupID: groupID,
@@ -51,10 +51,14 @@ func SendGroupMessage(url string, groupID int64, message []MessageItem) (string,
 	defer resp.Body.Close()
 
 	// 读取响应
+	var result map[string]interface{}
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("读取响应失败: %v", err)
+		return nil, fmt.Errorf("读取响应失败: %v", err)
 	}
 
-	return string(body), nil
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("解析响应JSON失败: %v", err)
+	}
+	return result, nil
 }
