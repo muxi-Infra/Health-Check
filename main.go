@@ -12,37 +12,89 @@ import (
 )
 
 var (
-	BaseURL = "http://127.0.0.1:5700/send_group_msg"
-	GroupID = int64(123456789)
+	TestUrl = "http://127.0.0.1:3000/send_group_msg" // 测试用的 URL
+	ProdURL = "http://127.0.0.1:3000/send_group_msg" // 生产用的 URL
+	GroupID = int64(740450762)
 )
 
 // 发送请求的函数
-func sendRequests(acf AppConfig) (interface{}, error) {
+func sendRequests(acf AppConfig) (HealthCheckResponse, error) {
 	url := fmt.Sprintf("http://%s:%d%s", acf.Domain, acf.Port, acf.Path)
 	req, err := http.NewRequest(acf.Type, url, nil)
 	if err != nil {
 		fmt.Printf("创建请求失败: %v", err)
-		return nil, fmt.Errorf("创建请求失败: %v", err)
+		return HealthCheckResponse{}, fmt.Errorf("创建请求失败: %v", err)
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("请求失败: %v", err)
-		return nil, fmt.Errorf("请求失败: %v", err)
+		return HealthCheckResponse{}, fmt.Errorf("请求失败: %v", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		fmt.Printf("请求返回非200状态码: %d", resp.StatusCode)
-		return nil, fmt.Errorf("请求返回非200状态码: %d", resp.StatusCode)
+		return HealthCheckResponse{}, fmt.Errorf("请求返回非200状态码: %d", resp.StatusCode)
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+
+		}
+	}(resp.Body)
 
 	// 读取响应
-	var result map[string]interface{}
+	var result HealthCheckResponse
 	body, _ := io.ReadAll(resp.Body)
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("解析响应JSON失败: %v", err)
+		return HealthCheckResponse{}, fmt.Errorf("解析响应JSON失败: %v", err)
 	}
 	return result, nil
+}
+
+func checkApp(name string, acf AppConfig) {
+	var message []MessageItem
+	resp, err := Retry(func() (HealthCheckResponse, error) {
+		return sendRequests(acf)
+	}, 3, 500*time.Microsecond)
+
+	if err != nil {
+		// 发送告警消息，@全体成员
+		message = []MessageItem{
+			{
+				Type: "at",
+				Data: map[string]interface{}{
+					"qq": "all",
+				},
+			},
+			{
+				Type: "text",
+				Data: map[string]interface{}{
+					"text": fmt.Sprintf("应用 %s 出现故障，请检查！\n错误原因: %s", name, err),
+				},
+			},
+		}
+	} else {
+		// 发送正常信息，无需@全体成员
+		message = []MessageItem{
+			{
+				Type: "text",
+				Data: map[string]interface{}{
+					"text": fmt.Sprintf(
+						"应用 %s 正常！\n"+
+							"系统CPU使用率: %s\n"+
+							"系统内存使用率: %s\n"+
+							"系统磁盘使用量: %s\n"+
+							"进程CPU使用率: %s\n"+
+							"进程常驻内存: %s MB\n"+
+							"当前Goroutine数: %s\n"+
+							"Go堆内存分配: %s MB\n",
+						name, resp.System.CPUPercent, resp.System.MemoryPercent, resp.System.DiskPercent,
+						resp.Process.CPUPercent, resp.Process.MemoryRSSMB, resp.Process.Goroutines, resp.Process.GoHeapAllocMB),
+				},
+			},
+		}
+	}
+	go SendGroupMessage(TestUrl, GroupID, message)
 }
 
 func main() {
@@ -63,34 +115,10 @@ func main() {
 	}
 
 	for name, acf := range cfg.App {
-		go func(name string, acf AppConfig) {
-			fmt.Printf("启动应用: %s", name)
-			data, err := sendRequests(acf)
-			if err != nil {
-				fmt.Printf("应用 %s 请求失败: %v\n", name, err)
-			} else {
-				fmt.Printf("应用 %s 请求成功: %v\n", name, data)
-				go func() {
-					_, err := SendGroupMessage(BaseURL, GroupID, []MessageItem{})
-					if err != nil {
-						fmt.Printf("发送群消息失败: %v\n", err)
-					} else {
-						fmt.Printf("发送群消息成功\n")
-					}
-				}()
-			}
-		}(name, acf)
+		go KeepBeat(func() (interface{}, error) {
+			checkApp(name, acf)
+			return nil, nil
+		}, 45*time.Minute, 12*time.Hour)
 	}
-	time.Sleep(3 * time.Second)
-
-	// 每 30 分钟执行一次
-	//ticker := time.NewTicker(30 * time.Minute)
-	//defer ticker.Stop()
-	//
-	//for {
-	//	select {
-	//	case <-ticker.C:
-	//		sendRequests(cfg)
-	//	}
-	//}
+	select {}
 }
